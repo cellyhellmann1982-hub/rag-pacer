@@ -53,6 +53,8 @@ export class App {
   whatIf: number | null = null;
   /** true, solange die Auswahl der Schlafdauer offen ist. */
   sleepChooser = false;
+  /** Einmaliger Hinweis, den der nächste Screen oben anzeigt. */
+  notice: string | null = null;
   gps: GpsInfo = {
     supported: gpsSupported(),
     error: null,
@@ -182,6 +184,7 @@ export class App {
 
   toggleTest(): void {
     if (!this.meta) {
+      this.notice = 'Der Test-Modus braucht eine Strecke. Bitte zuerst hier eine GPX-Datei laden.';
       this.show('setup');
       return;
     }

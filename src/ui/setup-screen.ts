@@ -24,10 +24,13 @@ import {
 } from './format';
 
 export function createSetupScreen(app: App): Screen {
+  const notice = app.notice;
+  app.notice = null;
   return {
     el: h(
       'div',
       { class: 'screen setup' },
+      notice ? h('div', { class: 'notice', role: 'status' }, notice) : null,
       routesSection(app),
       app.meta ? planSection(app) : null,
       deviceSection(app),

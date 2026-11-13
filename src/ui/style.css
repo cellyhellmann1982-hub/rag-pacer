@@ -438,6 +438,15 @@ textarea {
   gap: 4px;
 }
 
+.notice {
+  border: 2px solid var(--gelb);
+  border-radius: 10px;
+  padding: 12px 14px;
+  color: var(--gelb);
+  font-size: 18px;
+  font-weight: 700;
+}
+
 .summary {
   border-left: 4px solid var(--accent);
   padding-left: 10px;
