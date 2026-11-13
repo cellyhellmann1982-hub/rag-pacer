@@ -1,78 +1,78 @@
-import { RED_LINE_FACTOR, snapshot } from '../model/budget';
+import {
+  budgetRemainingMin,
+  napPreview,
+  RED_LINE_FACTOR,
+  snapshot,
+  suggestSleepMin,
+} from '../model/budget';
+import { ringAlarm } from './alarm';
 import type { App, Screen } from './app';
 import { h } from './dom';
-import { fmt1, fmtClock, fmtDayClock, fmtDur, fmtInt } from './format';
+import { fmt1, fmtClock, fmtDayClock, fmtDur, fmtInput, fmtInt } from './format';
 
 const WHAT_IF_MIN = [180, 240];
+/** Feste Vorschläge für die Schlafdauer in Minuten. */
+const NAP_MIN = [15, 30, 90];
+/** Der Wecker klingelt alle 2 s, höchstens 10 Minuten lang. */
+const RING_EVERY_MS = 2000;
+const RING_MAX_MS = 10 * 60_000;
+
+type Tone = 'gruen' | 'gelb' | 'rot' | '';
 
 function setText(el: HTMLElement, text: string): void {
   if (el.textContent !== text) el.textContent = text;
 }
 
-function setTone(el: HTMLElement, tone: 'gruen' | 'gelb' | 'rot' | ''): void {
+function setTone(el: HTMLElement, tone: Tone): void {
   if (el.dataset.tone !== tone) el.dataset.tone = tone;
 }
 
-export function createMainScreen(app: App): Screen {
-  if (!app.meta) {
-    return {
-      el: h(
-        'div',
-        { class: 'screen empty' },
-        h('p', null, 'Noch keine Strecke geladen.'),
-        h('button', { type: 'button', class: 'btn btn-big', onclick: () => app.show('setup') }, 'Zum Setup'),
-      ),
-    };
-  }
-  return app.openEntry('sleep') ? sleepView(app) : raceView(app);
+/** Minuten mit echtem Minuszeichen, abgerundet. */
+function fmtSigned(min: number): string {
+  const r = Math.floor(min);
+  return r < 0 ? `−${fmtInt(-r)}` : fmtInt(r);
 }
 
-// ---------- Schlafen: nur Weckzeit, Restminuten, Stopp ----------
+function fmtSpeed(v: number): string {
+  return !Number.isFinite(v) || v > 99 ? '–' : fmt1(v);
+}
 
-function sleepView(app: App): Screen {
-  const wake = h('div', { class: 'big big-1' });
-  const rest = h('div', { class: 'big big-2' });
-  const restLabel = h('div', { class: 'label' });
-  const hint = h('div', { class: 'hint' });
-  const el = h(
+function speedTone(v: number, base: number): Tone {
+  if (!Number.isFinite(v) || v > 99 || v > base * RED_LINE_FACTOR) return 'rot';
+  return v > base ? 'gelb' : '';
+}
+
+export function createMainScreen(app: App): Screen {
+  switch (app.mainMode()) {
+    case 'empty':
+      return {
+        el: h(
+          'div',
+          { class: 'screen empty' },
+          h('p', null, 'Noch keine Strecke geladen.'),
+          h('button', { type: 'button', class: 'btn btn-big', onclick: () => app.show('setup') }, 'Zum Setup'),
+        ),
+      };
+    case 'sleep':
+      return sleepView(app);
+    case 'chooser':
+      return chooserView(app);
+    case 'pause':
+      return pauseView(app);
+    case 'race':
+      return raceView(app);
+  }
+}
+
+/** Zwei große Werte nebeneinander: Zielzeit und Zeitlimit. */
+function pair(app: App, a: HTMLElement, b: HTMLElement): HTMLElement {
+  const c = app.meta!.cfg;
+  return h(
     'div',
-    { class: 'screen sleep' },
-    h('div', { class: 'label' }, 'Weckzeit'),
-    wake,
-    restLabel,
-    rest,
-    hint,
-    h('button', { type: 'button', class: 'btn btn-big btn-stop', onclick: () => app.stopSleep() }, 'Stopp'),
-    app.test.on ? testPanel(app) : null,
+    { class: 'pair' },
+    h('div', null, a, h('div', { class: 'sub' }, `Ziel ${fmtInput(c.targetH)} h`)),
+    h('div', null, b, h('div', { class: 'sub' }, `Limit ${fmtInput(c.limitH)} h`)),
   );
-
-  const update = () => {
-    const entry = app.openEntry('sleep');
-    if (!entry) return;
-    const now = app.now();
-    const wakeMs = app.activeRace().sleepWakeMs ?? entry.startMs;
-    const planned = Math.round((wakeMs - entry.startMs) / 60_000);
-    const left = Math.ceil((wakeMs - now) / 60_000);
-    setText(wake, fmtClock(wakeMs));
-    if (planned <= 0) {
-      setText(restLabel, 'Kein Schlaf mehr im Plan · schläft seit (min)');
-      setText(rest, fmtInt((now - entry.startMs) / 60_000));
-      setTone(rest, 'rot');
-    } else if (left >= 0) {
-      setText(restLabel, 'Noch Minuten');
-      setText(rest, fmtInt(left));
-      setTone(rest, '');
-    } else {
-      setText(restLabel, 'Überzogen um Minuten');
-      setText(rest, fmtInt(-left));
-      setTone(rest, 'rot');
-    }
-    setText(
-      hint,
-      `Wecker im Handy auf ${fmtClock(wakeMs)} stellen · Vorschlag ${fmtInt(planned)} min · eingeschlafen ${fmtClock(entry.startMs)}`,
-    );
-  };
-  return { el, update };
 }
 
 // ---------- Test-Modus: Zeit und Position simulieren ----------
@@ -120,6 +120,214 @@ function testPanel(app: App): HTMLElement {
   );
 }
 
+// ---------- Schlafen: nur Weckzeit, Restminuten, Stopp ----------
+
+function sleepView(app: App): Screen {
+  const wake = h('div', { class: 'big big-1' });
+  const rest = h('div', { class: 'big big-2' });
+  const restLabel = h('div', { class: 'label' });
+  const hint = h('div', { class: 'hint' });
+  const el = h(
+    'div',
+    { class: 'screen sleep' },
+    h('div', { class: 'label' }, 'Weckzeit'),
+    wake,
+    restLabel,
+    rest,
+    hint,
+    h('button', { type: 'button', class: 'btn btn-big btn-stop', onclick: () => app.stopSleep() }, 'Stopp'),
+    app.test.on ? testPanel(app) : null,
+  );
+  let lastRing = 0;
+
+  const update = () => {
+    const entry = app.openEntry('sleep');
+    if (!entry) return;
+    const now = app.now();
+    const wakeMs = app.activeRace().sleepWakeMs ?? entry.startMs;
+    const planned = Math.round((wakeMs - entry.startMs) / 60_000);
+    const left = Math.ceil((wakeMs - now) / 60_000);
+    setText(wake, fmtClock(wakeMs));
+    if (planned <= 0) {
+      setText(restLabel, 'Ohne Weckzeit · schläft seit (min)');
+      setText(rest, fmtInt((now - entry.startMs) / 60_000));
+      setTone(rest, 'gelb');
+    } else if (left > 0) {
+      setText(restLabel, 'Noch Minuten');
+      setText(rest, fmtInt(left));
+      setTone(rest, '');
+    } else {
+      setText(restLabel, 'Aufstehen! Überzogen um Minuten');
+      setText(rest, fmtInt(-left));
+      setTone(rest, 'rot');
+    }
+    const alarm = app.settings.alarm;
+    setText(
+      hint,
+      alarm
+        ? `Handy-Wecker trotzdem auf ${fmtClock(wakeMs)} stellen. Der Wecker hier klingelt nur, solange die App offen ist; das Display bleibt dafür an. Eingeschlafen ${fmtClock(entry.startMs)}.`
+        : `Wecker im Handy auf ${fmtClock(wakeMs)} stellen. Eingeschlafen ${fmtClock(entry.startMs)}.`,
+    );
+    if (alarm && planned > 0 && now >= wakeMs && now - wakeMs < RING_MAX_MS) {
+      const real = Date.now();
+      if (real - lastRing >= RING_EVERY_MS) {
+        lastRing = real;
+        ringAlarm();
+      }
+    }
+  };
+  return { el, update };
+}
+
+// ---------- Schlafdauer wählen, mit Vorschau der Folgen ----------
+
+function chooserView(app: App): Screen {
+  const plan = app.plan()!;
+  const suggestion = Math.round(
+    suggestSleepMin(plan, app.km(), Math.max(app.now(), plan.cfg.startMs), app.activeRace().log),
+  );
+  const options = NAP_MIN.map((min) => ({ min, fromPlan: false }));
+  if (suggestion > 0 && !NAP_MIN.includes(suggestion)) options.push({ min: suggestion, fromPlan: true });
+  options.sort((a, b) => a.min - b.min);
+
+  const rows = options.map((o) => {
+    const wake = h('div', { class: 'nap-line' });
+    const reserve = h('div', { class: 'nap-line' });
+    const speed = h('div', { class: 'nap-line' });
+    const btn = h(
+      'button',
+      { type: 'button', class: 'btn nap', onclick: () => app.startSleep(o.min) },
+      h(
+        'div',
+        { class: 'nap-min' },
+        fmtInt(o.min),
+        h('span', { class: 'nap-unit' }, o.fromPlan || o.min === suggestion ? 'min · Plan' : 'min'),
+      ),
+      h('div', { class: 'nap-info' }, wake, reserve, speed),
+    );
+    return { ...o, btn, wake, reserve, speed };
+  });
+
+  const el = h(
+    'div',
+    { class: 'screen chooser' },
+    app.test.on ? testPanel(app) : null,
+    h('div', { class: 'label' }, 'Wie lange schlafen?'),
+    ...rows.map((r) => r.btn),
+    h(
+      'p',
+      { class: 'muted' },
+      'Reserve = Zeit, die danach bis Zielzeit bzw. Zeitlimit übrig bleibt. Schnitt = nötig, wenn danach nicht mehr geschlafen wird.',
+    ),
+    h(
+      'button',
+      { type: 'button', class: 'btn btn-big', onclick: () => app.cancelSleepChooser() },
+      'Abbrechen',
+    ),
+  );
+
+  const update = () => {
+    const now = Math.max(app.now(), plan.cfg.startMs);
+    for (const r of rows) {
+      const p = napPreview(plan, app.km(), now, r.min);
+      setText(r.wake, `Wecken ${fmtClock(p.wakeMs)}`);
+      setText(
+        r.reserve,
+        `Reserve danach: Ziel ${fmtSigned(p.reserveTargetMin)} · Limit ${fmtSigned(p.reserveLimitMin)} min`,
+      );
+      setTone(r.reserve, p.reserveLimitMin < 0 ? 'rot' : p.reserveTargetMin < 0 ? 'gelb' : '');
+      setText(
+        r.speed,
+        `Schnitt danach: Ziel ${fmtSpeed(p.speedTargetKmh)} · Limit ${fmtSpeed(p.speedLimitKmh)} km/h`,
+      );
+      setTone(r.speed, speedTone(p.speedLimitKmh, plan.cfg.baseSpeedKmh));
+    }
+  };
+  return { el, update };
+}
+
+// ---------- Pause: Dauer und was noch an Reserve bleibt ----------
+
+function pauseView(app: App): Screen {
+  const since = h('div', { class: 'big big-1', 'data-tone': 'gelb' });
+  const sinceLabel = h('div', { class: 'label' });
+  const resTarget = h('div', { class: 'big big-2' });
+  const resLimit = h('div', { class: 'big big-2' });
+  const dDelta = h('dd');
+  const dSpeed = h('dd');
+  const dBudget = h('dd');
+  const dKm = h('dd');
+
+  const el = h(
+    'div',
+    { class: 'screen race' },
+    app.test.on ? testPanel(app) : null,
+    h('section', { class: 'block' }, sinceLabel, since),
+    h(
+      'section',
+      { class: 'block' },
+      h('div', { class: 'label' }, 'Reserve noch (min)'),
+      pair(app, resTarget, resLimit),
+    ),
+    h(
+      'dl',
+      { class: 'details' },
+      h('dt', null, 'Stand'),
+      dDelta,
+      h('dt', null, 'Nötiger Schnitt'),
+      dSpeed,
+      h('dt', null, 'Pausenbudget übrig'),
+      dBudget,
+      h('dt', null, 'km'),
+      dKm,
+    ),
+    h(
+      'div',
+      { class: 'actions' },
+      h(
+        'button',
+        { type: 'button', class: 'btn btn-big btn-sleep', onclick: () => app.openSleepChooser() },
+        'Schlafen',
+      ),
+      h('button', { type: 'button', class: 'btn btn-big active', onclick: () => app.togglePause() }, 'Weiter'),
+    ),
+  );
+
+  const update = () => {
+    const plan = app.plan();
+    const pause = app.openEntry('pause');
+    if (!plan || !pause) return;
+    const now = Math.max(app.now(), plan.cfg.startMs);
+    const km = app.km();
+    const log = app.activeRace().log;
+    const s = snapshot(plan, km, now, log, null);
+
+    setText(
+      sinceLabel,
+      `Pause seit (min) · ${pause.auto ? 'automatisch erkannt' : 'von Hand'} ${fmtClock(pause.startMs)}`,
+    );
+    setText(since, fmtInt(Math.max(0, (now - pause.startMs) / 60_000)));
+    setText(resTarget, fmtInt(Math.floor(s.sleepAffordableTargetMin)));
+    setTone(resTarget, s.sleepAffordableTargetMin <= 0 ? 'rot' : '');
+    setText(resLimit, fmtInt(Math.floor(s.sleepAffordableLimitMin)));
+    setTone(resLimit, s.sleepAffordableLimitMin <= 0 ? 'rot' : '');
+
+    const d = Math.round(s.deltaMin);
+    setText(dDelta, d > 0 ? `${fmtInt(d)} min Rückstand` : d < 0 ? `${fmtInt(-d)} min Vorsprung` : 'im Plan');
+    setTone(dDelta, s.status);
+    setText(
+      dSpeed,
+      `Ziel ${fmtSpeed(s.requiredSpeedTargetKmh)} · Limit ${fmtSpeed(s.requiredSpeedLimitKmh)} km/h`,
+    );
+    setTone(dSpeed, speedTone(s.requiredSpeedLimitKmh, plan.cfg.baseSpeedKmh));
+    const budget = budgetRemainingMin(plan, log, now);
+    setText(dBudget, `${fmtSigned(budget)} min`);
+    setTone(dBudget, budget < 0 ? 'gelb' : '');
+    setText(dKm, `${fmt1(km)} von ${fmt1(plan.totalKm)}`);
+  };
+  return { el, update };
+}
+
 // ---------- Rennen ----------
 
 function raceView(app: App): Screen {
@@ -136,14 +344,6 @@ function raceView(app: App): Screen {
   const speedTarget = h('div', { class: 'big big-2' });
   const speedLimit = h('div', { class: 'big big-2' });
 
-  const pair = (a: HTMLElement, b: HTMLElement) =>
-    h(
-      'div',
-      { class: 'pair' },
-      h('div', null, a, h('div', { class: 'sub' }, `Ziel ${fmtInput1(meta.cfg.targetH)} h`)),
-      h('div', null, b, h('div', { class: 'sub' }, `Limit ${fmtInput1(meta.cfg.limitH)} h`)),
-    );
-
   const whatIfButtons = WHAT_IF_MIN.map((min) => {
     const btn = h('button', { type: 'button', class: 'btn btn-toggle' }, `${min / 60} h`);
     btn.addEventListener('click', () => {
@@ -157,6 +357,8 @@ function raceView(app: App): Screen {
   const dNext = h('dd');
   const dEta = h('dd');
   const dElapsed = h('dd');
+  const dPace = h('dd');
+  const dPaceSleep = h('dd');
   const dGps = h('dd');
   const relocate = h(
     'button',
@@ -184,20 +386,13 @@ function raceView(app: App): Screen {
     h('label', null, h('span', null, 'km von Hand: ', manualOut), manual),
   );
 
-  const pauseBtn = h('button', { type: 'button', class: 'btn btn-big', onclick: () => app.togglePause() });
-  const sleepBtn = h(
-    'button',
-    { type: 'button', class: 'btn btn-big btn-sleep', onclick: () => app.startSleep() },
-    'Schlafen',
-  );
-
   const el = h(
     'div',
     { class: 'screen race' },
     app.test.on ? testPanel(app) : null,
     h('section', { class: 'block' }, deltaLabel, deltaValue),
-    h('section', { class: 'block' }, sleepLabel, pair(sleepTarget, sleepLimit)),
-    h('section', { class: 'block' }, speedLabel, pair(speedTarget, speedLimit)),
+    h('section', { class: 'block' }, sleepLabel, pair(app, sleepTarget, sleepLimit)),
+    h('section', { class: 'block' }, speedLabel, pair(app, speedTarget, speedLimit)),
     h(
       'div',
       { class: 'whatif' },
@@ -215,12 +410,25 @@ function raceView(app: App): Screen {
       dEta,
       h('dt', null, 'Seit Start'),
       dElapsed,
+      h('dt', null, 'Tempo bisher'),
+      dPace,
+      h('dt', null, 'Schlaf bei dem Tempo'),
+      dPaceSleep,
       h('dt', null, 'GPS'),
       dGps,
     ),
     relocate,
     manualPanel,
-    h('div', { class: 'actions' }, sleepBtn, pauseBtn),
+    h(
+      'div',
+      { class: 'actions' },
+      h(
+        'button',
+        { type: 'button', class: 'btn btn-big btn-sleep', onclick: () => app.openSleepChooser() },
+        'Schlafen',
+      ),
+      h('button', { type: 'button', class: 'btn btn-big', onclick: () => app.togglePause() }, 'Pause'),
+    ),
   );
 
   function update(): void {
@@ -247,30 +455,26 @@ function raceView(app: App): Screen {
 
     // 2. Schlaf noch möglich (bei "Was wäre wenn": Reserve nach diesem Schlaf)
     const wi = app.whatIf;
-    const sleepVals: [HTMLElement, number][] = [
-      [sleepTarget, s.sleepAffordableTargetMin - (wi ?? 0)],
-      [sleepLimit, s.sleepAffordableLimitMin - (wi ?? 0)],
-    ];
     setText(
       sleepLabel,
       wi === null ? 'Schlaf noch möglich (min)' : `Reserve nach ${wi / 60} h Schlaf (min)`,
     );
-    for (const [node, v] of sleepVals) {
-      const r = Math.floor(v);
-      setText(node, r < 0 ? `−${fmtInt(-r)}` : fmtInt(r));
-      setTone(node, r <= 0 ? 'rot' : '');
+    for (const [node, v] of [
+      [sleepTarget, s.sleepAffordableTargetMin - (wi ?? 0)],
+      [sleepLimit, s.sleepAffordableLimitMin - (wi ?? 0)],
+    ] as [HTMLElement, number][]) {
+      setText(node, fmtSigned(v));
+      setTone(node, Math.floor(v) <= 0 ? 'rot' : '');
     }
 
     // 3. Nötiger Fahrschnitt
     setText(speedLabel, `Nötiger Schnitt (km/h) bei noch ${fmtInt(s.sleepRestMin)} min Schlaf`);
-    const base = plan.cfg.baseSpeedKmh;
     for (const [node, v] of [
       [speedTarget, s.requiredSpeedTargetKmh],
       [speedLimit, s.requiredSpeedLimitKmh],
     ] as [HTMLElement, number][]) {
-      const impossible = !Number.isFinite(v) || v > 99;
-      setText(node, impossible ? '–' : fmt1(v));
-      setTone(node, impossible || v > base * RED_LINE_FACTOR ? 'rot' : v > base ? 'gelb' : '');
+      setText(node, fmtSpeed(v));
+      setTone(node, speedTone(v, plan.cfg.baseSpeedKmh));
     }
 
     for (const w of whatIfButtons) w.btn.classList.toggle('active', app.whatIf === w.min);
@@ -288,10 +492,26 @@ function raceView(app: App): Screen {
     setText(dEta, `${fmtDayClock(s.etaMs)} · ${fmtDur((s.etaMs - plan.cfg.startMs) / 60_000)} h`);
     setText(dElapsed, preStart ? 'noch nicht gestartet' : `${fmtDur(s.elapsedMin)} h`);
 
+    // Prognose mit dem echten Tempo
+    if (s.pace && !preStart) {
+      setText(dPace, `${fmt1(s.pace.actualKmh)} km/h · ${fmtInt(s.pace.factor * 100)} % vom Plan`);
+      setTone(dPace, s.pace.factor < 0.95 ? 'gelb' : '');
+      setText(
+        dPaceSleep,
+        `Ziel ${fmtInt(Math.floor(s.pace.sleepTargetMin))} · Limit ${fmtInt(Math.floor(s.pace.sleepLimitMin))} min`,
+      );
+      setTone(dPaceSleep, s.pace.sleepLimitMin <= 0 ? 'rot' : s.pace.sleepTargetMin <= 0 ? 'gelb' : '');
+    } else {
+      setText(dPace, 'noch zu wenig Strecke');
+      setTone(dPace, '');
+      setText(dPaceSleep, '–');
+      setTone(dPaceSleep, '');
+    }
+
     // GPS-Status und Notbetrieb
     const lost = !app.test.on && app.gpsLost();
     let gpsText: string;
-    let gpsTone: 'gruen' | 'gelb' | 'rot' = 'gruen';
+    let gpsTone: Tone = 'gruen';
     let offRoute = false;
     if (app.test.on) {
       gpsText = 'Test-Modus';
@@ -319,19 +539,7 @@ function raceView(app: App): Screen {
       if (document.activeElement !== manual && manual.value !== v) manual.value = v;
       setText(manualOut, fmtInt(km));
     }
-
-    // Knöpfe
-    const pause = app.openEntry('pause');
-    setText(
-      pauseBtn,
-      pause ? `Pause beenden · ${fmtInt(Math.max(0, (realNow - pause.startMs) / 60_000))} min` : 'Pause',
-    );
-    pauseBtn.classList.toggle('active', pause !== null);
   }
 
   return { el, update };
-}
-
-function fmtInput1(x: number): string {
-  return String(x).replace('.', ',');
 }

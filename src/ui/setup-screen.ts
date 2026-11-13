@@ -7,7 +7,7 @@ import {
 import { parseGpx, type ParsedGpx } from '../model/gpx';
 import { buildRoute, routeTotalKm } from '../model/route';
 import { defaultStationsText } from '../state/defaults';
-import type { RaceConfig, SleepBlock, Station } from '../state/types';
+import type { FatigueStep, RaceConfig, SleepBlock, Station } from '../state/types';
 import type { App, Screen } from './app';
 import { h, twoTapButton } from './dom';
 import {
@@ -219,6 +219,33 @@ function planSection(app: App): HTMLElement {
   [...c.sleepBlocks].sort((a, b) => a.afterH - b.afterH).forEach(addBlock);
   updateSum();
 
+  // Ermüdung: Stufen nach Fahrstunden
+  const fatigueBox = h('div', { class: 'blocks' });
+  const fatigueRows: { after: HTMLInputElement; factor: HTMLInputElement; row: HTMLElement }[] = [];
+  const addFatigue = (st: FatigueStep) => {
+    const entry = { after: numInput(st.afterRideH), factor: numInput(st.factor), row: h('div', { class: 'block-row' }) };
+    entry.row.append(
+      field('ab Fahrstunde', entry.after),
+      field('Faktor', entry.factor),
+      h(
+        'button',
+        {
+          type: 'button',
+          class: 'btn btn-small',
+          'aria-label': 'Stufe entfernen',
+          onclick: () => {
+            fatigueRows.splice(fatigueRows.indexOf(entry), 1);
+            entry.row.remove();
+          },
+        },
+        'Entfernen',
+      ),
+    );
+    fatigueRows.push(entry);
+    fatigueBox.append(entry.row);
+  };
+  [...c.fatigue].sort((a, b) => a.afterRideH - b.afterRideH).forEach(addFatigue);
+
   const save = h('button', { type: 'button', class: 'btn btn-big' }, 'Speichern');
   save.addEventListener('click', async () => {
     const msgs: string[] = [];
@@ -254,6 +281,10 @@ function planSection(app: App): HTMLElement {
       sleepBlocks: blockRows.map((b, i) => ({
         afterH: num(`Schlafblock ${i + 1} (Rennstunde)`, b.after, 0),
         min: num(`Schlafblock ${i + 1} (Minuten)`, b.min, 0),
+      })),
+      fatigue: fatigueRows.map((r, i) => ({
+        afterRideH: num(`Ermüdung ${i + 1} (Fahrstunde)`, r.after, 0),
+        factor: num(`Ermüdung ${i + 1} (Faktor)`, r.factor, 0, true),
       })),
     };
     if (cfg.targetH > cfg.limitH) msgs.push('Die Zielzeit darf nicht über dem Zeitlimit liegen.');
@@ -312,6 +343,14 @@ function planSection(app: App): HTMLElement {
     blockBox,
     sleepSum,
     h('button', { type: 'button', class: 'btn btn-small', onclick: () => addBlock({ afterH: 0, min: 0 }) }, 'Block hinzufügen'),
+    h('h3', null, 'Ermüdung'),
+    h(
+      'p',
+      { class: 'muted' },
+      'Ab einer Zahl von Fahrstunden (reine Fahrzeit, ohne Pausen und Schlaf) gilt ein Faktor auf den Plan-Schnitt, z. B. ab Fahrstunde 20 Faktor 0,95. Ohne Stufen rechnet der Plan ohne Ermüdung.',
+    ),
+    fatigueBox,
+    h('button', { type: 'button', class: 'btn btn-small', onclick: () => addFatigue({ afterRideH: 0, factor: 1 }) }, 'Stufe hinzufügen'),
     errors.el,
     save,
   );
@@ -322,6 +361,8 @@ function planSection(app: App): HTMLElement {
 function deviceSection(app: App): HTMLElement {
   const wake = h('input', { type: 'checkbox', checked: app.settings.wakeLock });
   wake.addEventListener('change', () => void app.setWakeLock(wake.checked));
+  const alarm = h('input', { type: 'checkbox', checked: app.settings.alarm });
+  alarm.addEventListener('change', () => void app.setAlarm(alarm.checked));
   const supported = 'wakeLock' in navigator;
   return h(
     'section',
@@ -333,7 +374,18 @@ function deviceSection(app: App): HTMLElement {
       wake,
       h('span', null, 'Display anlassen, solange die App offen ist (kostet Akku)'),
     ),
-    supported ? null : h('p', { class: 'muted' }, 'Dieses Gerät unterstützt das nicht.'),
+    supported ? null : h('p', { class: 'muted' }, 'Dieses Gerät kann das Display nicht anlassen.'),
+    h(
+      'label',
+      { class: 'check' },
+      alarm,
+      h('span', null, 'Wecker in der App: klingelt und vibriert zur Weckzeit, hält beim Schlafen das Display an'),
+    ),
+    h(
+      'p',
+      { class: 'muted' },
+      'Der App-Wecker klingelt nur, solange die App offen und im Vordergrund ist. Den Handy-Wecker immer zusätzlich stellen.',
+    ),
     app.meta
       ? h(
           'div',

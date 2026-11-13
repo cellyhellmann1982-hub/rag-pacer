@@ -56,7 +56,14 @@ Hinweise zum Betrieb:
 2. **Setup → Aktive Strecke:** Startzeit, Zeitlimit, Zielzeit, Basis-Schnitt, Abschnittsfaktoren, Pausenbudget
    und Schlafblöcke einstellen. Über dem Formular steht die Plan-Ankunft mit Reserve.
 3. **Rennen:** drei große Zahlen (Vorsprung/Rückstand, möglicher Schlaf, nötiger Schnitt), darunter km,
-   nächste Zeitstation, ETA, Zeit seit Start, GPS-Status. Knöpfe „Schlafen“ und „Pause“.
+   nächste Zeitstation, ETA, Zeit seit Start, bisheriges Tempo, GPS-Status. Knöpfe „Schlafen“ und „Pause“.
+   - **Schlafen** öffnet eine Auswahl (15 / 30 / 90 min und der nächste Plan-Block). Jede Taste zeigt vorab
+     Weckzeit, Reserve danach und nötigen Schnitt danach. Erst das Tippen auf eine Dauer startet den Schlaf.
+   - **Pause** (von Hand oder automatisch erkannt) wechselt in die Pausen-Ansicht: Dauer der Pause und die
+     Reserve, die bis Zielzeit und Zeitlimit noch bleibt. „Weiter“ beendet sie; Losfahren ebenfalls.
+   - **Wecker:** Zur Weckzeit klingelt und vibriert die App, solange sie offen ist. Dafür bleibt beim Schlafen
+     das Display an. Das ist nur ein Zusatz: Auf dem iPhone und bei gesperrtem Handy klingelt er nicht
+     zuverlässig. Den Handy-Wecker immer zusätzlich stellen. Abschaltbar im Setup unter „Gerät“.
 4. **Log:** alle Pausen, Schlafblöcke und Stations-Passagen, Export als CSV und JSON.
 5. **Test:** simuliert Position und Uhrzeit per Schieberegler. Im Test-Modus wird nichts gespeichert.
 
@@ -64,7 +71,10 @@ Hinweise zum Betrieb:
 
 Alle Formeln stehen in `src/model/budget.ts` und sind in `tests/budget.test.ts` belegt.
 
-- **Fahrzeit:** je Abschnitt (zwischen zwei Zeitstationen) Länge ÷ (Basis-Schnitt × Abschnittsfaktor).
+- **Fahrzeit:** je Abschnitt (zwischen zwei Zeitstationen) Länge ÷ (Basis-Schnitt × Abschnittsfaktor × Ermüdungsfaktor).
+- **Ermüdung:** optionale Stufen „ab Fahrstunde X gilt Faktor Y“. Gezählt wird reine Fahrzeit laut Plan,
+  nicht die Rennzeit. Ohne Stufen (Standard) rechnet der Plan ohne Ermüdung. Sinnvolle Werte liefert erst eine
+  lange Testfahrt: Schnitt der späten Stunden ÷ Schnitt der frühen Stunden auf vergleichbarem Profil.
 - **Pausen im Plan:** die Stationspause fällt an der jeweiligen Zeitstation an. Pipi, Einkaufen und Technik-Puffer
   werden proportional zur Fahrzeit verteilt. Pipi zählt je Stunde **Fahrzeit** (z. B. alle 3,5 h Fahrzeit 4 min).
 - **Schlaf im Plan:** jeder Block beginnt nach einer festen Rennstunde. Liegt ein Block später als die
@@ -74,6 +84,10 @@ Alle Formeln stehen in `src/model/budget.ts` und sind in `tests/budget.test.ts` 
   die der Plan ab hier noch vorsieht.
 - **Nötiger Schnitt:** Rest-km ÷ (Restzeit − Rest-Pausen − Restschlaf). Das ist der echte Durchschnitt über den
   Rest, direkt vergleichbar mit dem Schnitt am Garmin. Als Restschlaf gilt der noch nicht geschlafene Plan-Schlaf.
+- **Tempo bisher:** gefahrene Plan-Fahrzeit ÷ tatsächliche Fahrzeit (Rennzeit minus protokollierte Pausen und
+  Schlaf), ab 20 km. „Schlaf bei dem Tempo“ rechnet den Rest in diesem Verhältnis zum Plan statt im Plan-Schnitt.
+  Pausen, die nicht im Log stehen (Handy gesperrt), zählen dabei als langsames Fahren; der Wert ist dann zu
+  pessimistisch.
 - **Was wäre wenn (3 h / 4 h):** rechnet mit „ab jetzt noch so viel Schlaf“. Schnitt und ETA ändern sich,
   die Schlaf-Zeile zeigt die Reserve, die danach bleibt.
 - **Farben:** grün = im Plan oder davor, gelb = Rückstand, rot = die Ankunft mit dem Restschlaf läge hinter dem

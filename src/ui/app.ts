@@ -1,10 +1,10 @@
-import { suggestSleepMin } from '../model/budget';
 import type { ParsedGpx } from '../model/gpx';
 import { INITIAL_MOTION, projectOnRoute, speedBetweenKmh, updateMotion } from '../model/projection';
 import { buildRoute, routeTotalKm } from '../model/route';
 import { defaultConfig, emptyRace } from '../state/defaults';
 import * as store from '../state/store';
 import type { LogEntry, Plan, RaceState, Route, RouteMeta, Settings, Station } from '../state/types';
+import { armAlarm } from './alarm';
 import { h } from './dom';
 import { gpsSupported, startGps, type GpsFix } from './gps';
 import { createLogScreen } from './log-screen';
@@ -12,6 +12,9 @@ import { createMainScreen } from './main-screen';
 import { createSetupScreen } from './setup-screen';
 
 export type ScreenName = 'main' | 'setup' | 'log';
+
+/** Ansicht des Renn-Screens: Rennen, Pause, Schlafdauer wählen, Schlafen oder keine Strecke. */
+export type MainMode = 'empty' | 'race' | 'pause' | 'chooser' | 'sleep';
 
 export interface Screen {
   el: HTMLElement;
@@ -44,10 +47,12 @@ export class App {
   meta: RouteMeta | null = null;
   route: Route | null = null;
   race: RaceState = emptyRace();
-  settings: Settings = { wakeLock: false };
+  settings: Settings = { wakeLock: false, alarm: true };
   test = { on: false, km: 0, nowMs: 0, race: emptyRace() };
   /** "Was wäre wenn": Restschlaf in Minuten oder null für den Plan. */
   whatIf: number | null = null;
+  /** true, solange die Auswahl der Schlafdauer offen ist. */
+  sleepChooser = false;
   gps: GpsInfo = {
     supported: gpsSupported(),
     error: null,
@@ -59,6 +64,7 @@ export class App {
 
   private screenName: ScreenName = 'main';
   private screen: Screen | null = null;
+  private renderedMode: MainMode = 'empty';
   private lastEvalMs: number | null = null;
   private wakeLock: WakeLockSentinel | null = null;
   private readonly host: HTMLElement;
@@ -119,10 +125,21 @@ export class App {
     return Date.now() - (this.gps.lastFixMs ?? this.gps.sinceMs) > GPS_LOST_MS;
   }
 
+  /** Welche Ansicht der Renn-Screen gerade zeigen muss. */
+  mainMode(): MainMode {
+    if (!this.meta) return 'empty';
+    if (this.openEntry('sleep')) return 'sleep';
+    if (this.sleepChooser) return 'chooser';
+    if (this.openEntry('pause')) return 'pause';
+    return 'race';
+  }
+
   // ---------- Navigation ----------
 
   show(name: ScreenName): void {
     this.screenName = name;
+    if (name !== 'main') this.sleepChooser = false;
+    this.renderedMode = this.mainMode();
     this.screen =
       name === 'main'
         ? createMainScreen(this)
@@ -148,11 +165,16 @@ export class App {
       item('Log', this.screenName === 'log', () => this.show('log')),
       item(this.test.on ? 'Test aus' : 'Test', this.test.on, () => this.toggleTest()),
     );
-    this.nav.hidden = this.screenName === 'main' && this.openEntry('sleep') !== null;
+    this.nav.hidden = this.screenName === 'main' && this.renderedMode === 'sleep';
   }
 
   private tick(): void {
     if (document.visibilityState !== 'visible') return;
+    // Automatisch erkannte Pausen beginnen und enden ohne Knopfdruck: Ansicht dann wechseln.
+    if (this.screenName === 'main' && this.mainMode() !== this.renderedMode) {
+      this.show('main');
+      return;
+    }
     this.screen?.update?.();
   }
 
@@ -170,6 +192,8 @@ export class App {
       this.test.race = emptyRace();
     }
     this.whatIf = null;
+    this.sleepChooser = false;
+    void this.syncWakeLock();
     this.show('main');
   }
 
@@ -188,6 +212,7 @@ export class App {
     if (this.meta && !this.route) this.meta = null;
     this.test.on = false;
     this.whatIf = null;
+    this.sleepChooser = false;
     this.lastEvalMs = null;
     if (persist) await store.saveActiveId(this.meta?.id ?? null);
   }
@@ -247,8 +272,16 @@ export class App {
     await this.syncWakeLock();
   }
 
+  async setAlarm(on: boolean): Promise<void> {
+    this.settings = { ...this.settings, alarm: on };
+    await store.saveSettings(this.settings);
+    await this.syncWakeLock();
+  }
+
   private async syncWakeLock(): Promise<void> {
-    const want = this.settings.wakeLock && document.visibilityState === 'visible';
+    // Beim Schlafen mit App-Wecker bleibt das Display an, sonst kann der Wecker nicht klingeln.
+    const sleeping = this.settings.alarm && this.openEntry('sleep') !== null;
+    const want = (this.settings.wakeLock || sleeping) && document.visibilityState === 'visible';
     if (!want) {
       await this.wakeLock?.release().catch(() => {});
       this.wakeLock = null;
@@ -377,17 +410,31 @@ export class App {
     this.refresh();
   }
 
-  startSleep(): void {
-    const plan = this.plan();
-    if (!plan || this.openEntry('sleep')) return;
+  /** Öffnet die Auswahl der Schlafdauer. */
+  openSleepChooser(): void {
+    if (!this.meta || this.openEntry('sleep')) return;
+    this.sleepChooser = true;
+    this.refresh();
+  }
+
+  cancelSleepChooser(): void {
+    this.sleepChooser = false;
+    this.refresh();
+  }
+
+  /** Startet einen Schlafblock mit Weckzeit in `minutes` Minuten. Muss aus einem Tippen heraus aufgerufen werden. */
+  startSleep(minutes: number): void {
+    if (!this.meta || this.openEntry('sleep')) return;
     const race = this.activeRace();
     const now = this.now();
+    this.sleepChooser = false;
     this.closeOpen(race, 'pause', now);
     race.motion = { ...INITIAL_MOTION };
-    const suggested = suggestSleepMin(plan, this.km(), now, race.log);
-    race.sleepWakeMs = now + Math.round(suggested) * 60_000;
+    race.sleepWakeMs = now + Math.round(minutes) * 60_000;
     race.log.push({ type: 'sleep', startMs: now, endMs: null, km: this.km() });
+    if (this.settings.alarm) armAlarm();
     this.persistRace();
+    void this.syncWakeLock();
     this.refresh();
   }
 
@@ -398,6 +445,7 @@ export class App {
     race.motion = { ...INITIAL_MOTION };
     race.lastFix = this.test.on ? race.lastFix : null;
     this.persistRace();
+    void this.syncWakeLock();
     this.refresh();
   }
 }

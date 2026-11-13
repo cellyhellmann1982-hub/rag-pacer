@@ -6,7 +6,9 @@ import {
   etaFinishMs,
   flexPauseMin,
   loggedMin,
+  napPreview,
   nextStation,
+  pace,
   plannedArrivalAt,
   plannedElapsedMin,
   plannedPauseMin,
@@ -48,6 +50,7 @@ const cfg = (over: Partial<RaceConfig> = {}): RaceConfig => ({
     { afterH: 22, min: 90 },
     { afterH: 40, min: 120 },
   ],
+  fatigue: [],
   ...over,
 });
 
@@ -474,5 +477,126 @@ describe('snapshot', () => {
     expect(s.requiredSpeedLimitKmh).toBe(0);
     expect(s.next).toBeNull();
     expect(s.etaMs).toBe(START + 52 * H);
+  });
+});
+
+describe("Ermüdung nach Fahrstunden", () => {
+  it("ohne Stufen ändert sich nichts", () => {
+    expect(rideMin(simple({ fatigue: [] }), 100)).toBeCloseTo(240, 9);
+  });
+
+  it("bremst ab der Stufe", () => {
+    // 2 h mit 25 km/h = 50 km, die restlichen 50 km mit 20 km/h = 2,5 h
+    const p = simple({ fatigue: [{ afterRideH: 2, factor: 0.8 }] });
+    expect(rideMin(p, 50)).toBeCloseTo(120, 9);
+    expect(rideMin(p, 60)).toBeCloseTo(120 + 30, 9);
+    expect(rideMin(p, 100)).toBeCloseTo(270, 9);
+    expect(restRideMin(p, 50)).toBeCloseTo(150, 9);
+  });
+
+  it("verarbeitet mehrere Stufen in beliebiger Reihenfolge", () => {
+    const p = simple({
+      fatigue: [
+        { afterRideH: 3, factor: 0.5 },
+        { afterRideH: 1, factor: 0.8 },
+      ],
+    });
+    // 1 h → 25 km, 2 h mit 20 km/h → 40 km, Rest 35 km mit 12,5 km/h → 2,8 h
+    expect(rideMin(p, 100)).toBeCloseTo((1 + 2 + 2.8) * 60, 9);
+  });
+
+  it("wirkt zusammen mit Abschnittsfaktoren", () => {
+    const p: Plan = {
+      totalKm: 100,
+      stations: [{ name: "S", km: 50 }],
+      cfg: simple({ sectionFactors: [1, 0.8], fatigue: [{ afterRideH: 1, factor: 0.9 }] }).cfg,
+    };
+    // 25 km in 1 h; 25 km mit 22,5; 50 km mit 25×0,8×0,9 = 18
+    expect(rideMin(p, 100)).toBeCloseTo((1 + 25 / 22.5 + 50 / 18) * 60, 9);
+  });
+
+  it("eine Stufe ab Stunde 0 gilt von Beginn an", () => {
+    const p = simple({ fatigue: [{ afterRideH: 0, factor: 0.5 }] });
+    expect(rideMin(p, 100)).toBeCloseTo(480, 9);
+  });
+
+  it("bleibt monoton und verlängert die Plan-Ankunft", () => {
+    const base = rag();
+    const tired = rag({ fatigue: [{ afterRideH: 20, factor: 0.9 }] });
+    expect(plannedArrivalAt(tired, 1100)).toBeGreaterThan(plannedArrivalAt(base, 1100));
+    // vor der Stufe (16 h Fahrzeit bei km 400) bleibt die Fahrzeit gleich
+    expect(rideMin(tired, 400)).toBeCloseTo(rideMin(base, 400), 9);
+    let prev = -1;
+    for (let km = 0; km <= 1100; km += 5) {
+      const t = rideMin(tired, km);
+      expect(t).toBeGreaterThan(prev);
+      prev = t;
+    }
+  });
+});
+
+describe("Schlaf-Vorschau", () => {
+  it("zeigt Weckzeit, Reserve und Schnitt nach dem Schlaf", () => {
+    const p = simple();
+    const n = napPreview(p, 0, START, 15);
+    expect(n.wakeMs).toBe(START + 15 * MIN);
+    expect(n.reserveLimitMin).toBeCloseTo(105, 9);
+    expect(n.reserveTargetMin).toBeCloseTo(45, 9);
+    expect(n.speedLimitKmh).toBeCloseTo(100 / (345 / 60), 9);
+  });
+
+  it("Reserve wird negativ, wenn der Schlaf zu lang ist", () => {
+    const n = napPreview(simple(), 0, START, 90);
+    expect(n.reserveTargetMin).toBeCloseTo(-30, 9);
+    expect(n.reserveLimitMin).toBeCloseTo(30, 9);
+    expect(n.speedTargetKmh).toBeGreaterThan(25);
+  });
+
+  it("Schlaf 0 entspricht sleep_affordable", () => {
+    const p = rag();
+    const now = START + 20 * H;
+    const n = napPreview(p, 450, now, 0);
+    expect(n.reserveLimitMin).toBeCloseTo(sleepAffordableMin(p, 450, now, "limit"), 9);
+  });
+});
+
+describe("Prognose mit echtem Tempo", () => {
+  it("ist null am Start und bei zu wenig Strecke", () => {
+    expect(pace(simple(), 0, START, [])).toBeNull();
+    expect(pace(simple(), 10, START + H, [])).toBeNull();
+  });
+
+  it("im Plan-Tempo: Faktor 1, gleiche Reserve wie sleep_affordable", () => {
+    const p = simple();
+    const r = pace(p, 50, START + 2 * H, [])!;
+    expect(r.factor).toBeCloseTo(1, 9);
+    expect(r.actualKmh).toBeCloseTo(25, 9);
+    expect(r.sleepLimitMin).toBeCloseTo(sleepAffordableMin(p, 50, START + 2 * H, "limit"), 9);
+  });
+
+  it("langsamer als der Plan: weniger Schlaf möglich", () => {
+    const p = simple();
+    // 50 km in 2,5 h = 20 km/h → Faktor 0,8; Rest 50 km dauert 2,5 h statt 2 h
+    const r = pace(p, 50, START + 2.5 * H, [])!;
+    expect(r.factor).toBeCloseTo(0.8, 9);
+    expect(r.actualKmh).toBeCloseTo(20, 9);
+    expect(r.sleepLimitMin).toBeCloseTo(210 - 150, 9);
+    expect(r.sleepTargetMin).toBe(0);
+  });
+
+  it("zieht protokollierte Pausen und Schlaf von der Fahrzeit ab", () => {
+    const log: LogEntry[] = [
+      { type: "pause", startMs: START + H, endMs: START + H + 20 * MIN, km: 25 },
+      { type: "sleep", startMs: START + 1.5 * H, endMs: START + 1.5 * H + 10 * MIN, km: 30 },
+    ];
+    const r = pace(simple(), 50, START + 2.5 * H, log)!;
+    expect(r.factor).toBeCloseTo(1, 9);
+    expect(r.actualKmh).toBeCloseTo(25, 9);
+  });
+
+  it("steht im snapshot", () => {
+    const p = rag();
+    expect(snapshot(p, 0, START, []).pace).toBeNull();
+    expect(snapshot(p, 300, plannedArrivalAt(p, 300), []).pace).not.toBeNull();
   });
 });

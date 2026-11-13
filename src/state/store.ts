@@ -9,7 +9,9 @@ const routeKey = (id: string) => `route:${id}`;
 const raceKey = (id: string) => `race:${id}`;
 
 export async function loadRoutes(): Promise<RouteMeta[]> {
-  return (await get<RouteMeta[]>(K_ROUTES)) ?? [];
+  const routes = (await get<RouteMeta[]>(K_ROUTES)) ?? [];
+  // Ältere gespeicherte Konfigurationen kennen noch keine Ermüdung.
+  return routes.map((r) => ({ ...r, cfg: { ...r.cfg, fatigue: r.cfg.fatigue ?? [] } }));
 }
 
 export async function saveRoutes(routes: RouteMeta[]): Promise<void> {

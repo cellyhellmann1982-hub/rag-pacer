@@ -1,4 +1,4 @@
-import type { LogEntry, LogType, Plan, Station } from '../state/types';
+import type { FatigueStep, LogEntry, LogType, Plan, Station } from '../state/types';
 
 const MIN_MS = 60_000;
 
@@ -21,17 +21,42 @@ export function sectionSpeedKmh(plan: Plan, i: number): number {
   return plan.cfg.baseSpeedKmh * (plan.cfg.sectionFactors[i] ?? 1);
 }
 
-/** Geplante reine Fahrzeit in Minuten von km 0 bis `km`. */
+/**
+ * Geplante reine Fahrzeit in Minuten von km 0 bis `km`.
+ * Schnitt = Basis-Schnitt × Abschnittsfaktor × Ermüdungsfaktor (nach Fahrstunden).
+ */
 export function rideMin(plan: Plan, km: number): number {
   const k = clampKm(plan, km);
   const b = sectionBounds(plan);
-  let min = 0;
+  const steps = [...(plan.cfg.fatigue ?? [])].sort((x, y) => x.afterRideH - y.afterRideH);
+  let h = 0; // bisherige Fahrzeit in Stunden
   for (let i = 0; i < b.length - 1; i++) {
-    const len = Math.min(k, b[i + 1]) - b[i];
+    let len = Math.min(k, b[i + 1]) - b[i];
     if (len <= 0) break;
-    min += (len / sectionSpeedKmh(plan, i)) * 60;
+    // Innerhalb des Abschnitts an jeder Ermüdungsstufe neu ansetzen.
+    while (len > 0) {
+      const v = sectionSpeedKmh(plan, i) * fatigueFactorAt(steps, h);
+      const next = steps.find((s) => s.afterRideH > h + 1e-9);
+      const need = len / v;
+      if (!next || h + need <= next.afterRideH) {
+        h += need;
+        len = 0;
+      } else {
+        len -= (next.afterRideH - h) * v;
+        h = next.afterRideH;
+      }
+    }
   }
-  return min;
+  return h * 60;
+}
+
+/** Ermüdungsfaktor nach `rideH` Stunden Fahrzeit (Stufen aufsteigend sortiert). */
+function fatigueFactorAt(steps: FatigueStep[], rideH: number): number {
+  let f = 1;
+  for (const s of steps) {
+    if (s.afterRideH <= rideH + 1e-9) f = s.factor;
+  }
+  return f;
 }
 
 /**
@@ -224,6 +249,65 @@ export function suggestSleepMin(plan: Plan, km: number, nowMs: number, log: LogE
   return Math.max(0, Math.min(next, sleepAffordableMin(plan, km, nowMs, 'limit')));
 }
 
+export interface NapPreview {
+  wakeMs: number;
+  /** Reserve nach dem Schlaf (kann negativ sein). */
+  reserveTargetMin: number;
+  reserveLimitMin: number;
+  /** Nötiger Schnitt nach dem Schlaf, wenn danach nicht mehr geschlafen wird. */
+  speedTargetKmh: number;
+  speedLimitKmh: number;
+}
+
+/** Was es kostet, jetzt `napMin` Minuten zu schlafen. */
+export function napPreview(plan: Plan, km: number, nowMs: number, napMin: number): NapPreview {
+  const free = (which: Deadline) =>
+    remainingTimeMin(plan, nowMs, which) - restRideMin(plan, km) - restPauseMin(plan, km) - napMin;
+  return {
+    wakeMs: nowMs + napMin * MIN_MS,
+    reserveTargetMin: free('target'),
+    reserveLimitMin: free('limit'),
+    speedTargetKmh: requiredSpeedKmh(plan, km, nowMs, napMin, 'target'),
+    speedLimitKmh: requiredSpeedKmh(plan, km, nowMs, napMin, 'limit'),
+  };
+}
+
+/** Unter dieser Distanz ist das bisherige Tempo noch nicht aussagekräftig. */
+export const MIN_PACE_KM = 20;
+
+export interface Pace {
+  /** Tatsächlicher Fahrschnitt bisher (ohne protokollierte Pausen und Schlaf). */
+  actualKmh: number;
+  /** Verhältnis zum Plan: 1 = wie geplant, 0,9 = 10 % langsamer. */
+  factor: number;
+  /** Schlaf noch möglich, wenn der Rest im bisherigen Verhältnis zum Plan gefahren wird. */
+  sleepTargetMin: number;
+  sleepLimitMin: number;
+}
+
+/**
+ * Prognose mit dem echten Tempo: Plan-Fahrzeit bis hierher geteilt durch die tatsächliche Fahrzeit
+ * (Rennzeit minus protokollierte Pausen und Schlaf). Null, solange zu wenig gefahren wurde.
+ */
+export function pace(plan: Plan, km: number, nowMs: number, log: LogEntry[]): Pace | null {
+  const k = clampKm(plan, km);
+  const movingMin =
+    (nowMs - plan.cfg.startMs) / MIN_MS - loggedMin(log, 'pause', nowMs) - loggedMin(log, 'sleep', nowMs);
+  if (k < MIN_PACE_KM || movingMin <= 0) return null;
+  const factor = rideMin(plan, k) / movingMin;
+  const free = (which: Deadline) =>
+    Math.max(
+      0,
+      remainingTimeMin(plan, nowMs, which) - restRideMin(plan, k) / factor - restPauseMin(plan, k),
+    );
+  return {
+    actualKmh: k / (movingMin / 60),
+    factor,
+    sleepTargetMin: free('target'),
+    sleepLimitMin: free('limit'),
+  };
+}
+
 export type Status = 'gruen' | 'gelb' | 'rot';
 
 export interface Snapshot {
@@ -242,6 +326,8 @@ export interface Snapshot {
   etaMs: number;
   next: NextStation | null;
   redLine: RedLine;
+  /** Prognose mit dem bisherigen Tempo, null bei zu wenig Daten. */
+  pace: Pace | null;
   status: Status;
 }
 
@@ -278,6 +364,7 @@ export function snapshot(
     etaMs: eta,
     next: nextStation(plan, km),
     redLine: red,
+    pace: pace(plan, km, nowMs, log),
     status,
   };
 }

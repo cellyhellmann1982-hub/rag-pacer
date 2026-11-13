@@ -10,6 +10,12 @@ export interface SleepBlock {
   min: number;
 }
 
+/** Ermüdung: ab `afterRideH` Stunden reiner Fahrzeit gilt `factor` auf den Plan-Schnitt. */
+export interface FatigueStep {
+  afterRideH: number;
+  factor: number;
+}
+
 export interface RaceConfig {
   /** Startzeit als Unix-Millisekunden. */
   startMs: number;
@@ -27,6 +33,8 @@ export interface RaceConfig {
   shopMin: number;
   techBufferMin: number;
   sleepBlocks: SleepBlock[];
+  /** Leer = keine Ermüdung im Plan. */
+  fatigue: FatigueStep[];
 }
 
 /** Alles, was das Rennmodell braucht. Stationen aufsteigend sortiert, 0 < km < totalKm. */
@@ -85,4 +93,6 @@ export interface RouteMeta {
 
 export interface Settings {
   wakeLock: boolean;
+  /** Wecker in der App: klingelt zur Weckzeit und hält beim Schlafen das Display an. */
+  alarm: boolean;
 }

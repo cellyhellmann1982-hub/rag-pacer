@@ -31,6 +31,7 @@ export function defaultConfig(stationCount: number): RaceConfig {
       { afterH: 22, min: 90 },
       { afterH: 40, min: 120 },
     ],
+    fatigue: [],
   };
 }
 
@@ -44,4 +45,4 @@ export function emptyRace(): RaceState {
   };
 }
 
-export const DEFAULT_SETTINGS: Settings = { wakeLock: false };
+export const DEFAULT_SETTINGS: Settings = { wakeLock: false, alarm: true };
