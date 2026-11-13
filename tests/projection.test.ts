@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  advanceOdometer,
   INITIAL_MOTION,
   projectOnRoute,
   speedBetweenKmh,
@@ -130,6 +131,55 @@ describe('speedBetweenKmh', () => {
 
   it('ist 0 ohne Zeitdifferenz', () => {
     expect(speedBetweenKmh({ ...at(0), tMs: 5 }, { ...at(1), tMs: 5 })).toBe(0);
+  });
+});
+
+describe('advanceOdometer', () => {
+  it('setzt beim ersten Punkt nur den Anker', () => {
+    const r = advanceOdometer(null, at(1));
+    expect(r.addedKm).toBe(0);
+    expect(r.anchor).toEqual(at(1));
+  });
+
+  it('zählt die Distanz und rückt den Anker nach', () => {
+    const r = advanceOdometer(at(1), at(1.2));
+    expect(r.addedKm).toBeCloseTo(0.2, 3);
+    expect(r.anchor).toEqual(at(1.2));
+  });
+
+  it('ignoriert GPS-Rauschen im Stand', () => {
+    let anchor: { lat: number; lon: number } | null = at(1);
+    let km = 0;
+    for (const m of [10, -15, 20, -5, 25, 0]) {
+      const r = advanceOdometer(anchor, at(1, m));
+      anchor = r.anchor;
+      km += r.addedKm;
+    }
+    expect(km).toBe(0);
+    expect(anchor).toEqual(at(1));
+  });
+
+  it('verliert langsames Rollen nicht', () => {
+    // 10 m pro Messung: jede dritte Messung überschreitet die 30-m-Schwelle
+    let anchor: { lat: number; lon: number } | null = null;
+    let km = 0;
+    for (let i = 0; i <= 30; i++) {
+      const r = advanceOdometer(anchor, at(i * 0.01));
+      anchor = r.anchor;
+      km += r.addedKm;
+    }
+    expect(km).toBeCloseTo(0.3, 2);
+  });
+
+  it('summiert eine Fahrt auf', () => {
+    let anchor: { lat: number; lon: number } | null = null;
+    let km = 0;
+    for (let i = 0; i <= 250; i++) {
+      const r = advanceOdometer(anchor, at(i * 0.2));
+      anchor = r.anchor;
+      km += r.addedKm;
+    }
+    expect(km).toBeCloseTo(50, 1);
   });
 });
 

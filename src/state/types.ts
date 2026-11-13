@@ -77,6 +77,8 @@ export interface RaceState {
   log: LogEntry[];
   motion: MotionState;
   lastFix: { lat: number; lon: number; tMs: number } | null;
+  /** Fahrt ohne Strecke: letzte Position, bis zu der die Distanz gezählt wurde. */
+  odoFix: { lat: number; lon: number } | null;
   /** Vorgeschlagene Weckzeit des laufenden Schlafblocks. */
   sleepWakeMs: number | null;
 }
@@ -87,6 +89,8 @@ export interface RouteMeta {
   totalKm: number;
   ascentM: number;
   importedMs: number;
+  /** true = Fahrt ohne Strecke: nur eine Distanz, km werden per GPS mitgezählt. */
+  free?: boolean;
   stations: Station[];
   cfg: RaceConfig;
 }

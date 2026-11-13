@@ -132,6 +132,33 @@ export function speedBetweenKmh(
   return (haversineM(a.lat, a.lon, b.lat, b.lon) / dt) * 3600;
 }
 
+/** Kleinere Bewegungen gelten als GPS-Rauschen und werden nicht gezählt. */
+export const ODOMETER_MIN_STEP_M = 30;
+
+export interface OdometerResult {
+  /** Neu gezählte Distanz in km (0, solange die Bewegung unter der Schwelle bleibt). */
+  addedKm: number;
+  /** Position, ab der weitergezählt wird. */
+  anchor: { lat: number; lon: number };
+}
+
+/**
+ * Kilometerzähler für Fahrten ohne Strecke: zählt die Luftlinie vom Ankerpunkt zur neuen Position,
+ * sobald sie mindestens `minStepM` beträgt. Darunter bleibt der Anker stehen, damit sich
+ * GPS-Rauschen im Stand nicht aufsummiert, langsames Rollen aber nicht verloren geht.
+ */
+export function advanceOdometer(
+  anchor: { lat: number; lon: number } | null,
+  fix: { lat: number; lon: number },
+  minStepM = ODOMETER_MIN_STEP_M,
+): OdometerResult {
+  const here = { lat: fix.lat, lon: fix.lon };
+  if (!anchor) return { addedKm: 0, anchor: here };
+  const d = haversineM(anchor.lat, anchor.lon, fix.lat, fix.lon);
+  if (d < minStepM) return { addedKm: 0, anchor };
+  return { addedKm: d / 1000, anchor: here };
+}
+
 export interface MotionSample {
   /** Zeitpunkt der Messung. */
   tMs: number;

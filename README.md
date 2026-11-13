@@ -46,6 +46,8 @@ Hinweise zum Betrieb:
 - Die App misst nur, solange sie offen und das Display an ist. Im Setup gibt es dafür „Display anlassen“ (kostet Akku).
   Ist das Handy gesperrt, ruht die Messung; beim nächsten Öffnen werden Zeit und Position sofort nachgezogen.
   Eine Standpause, die komplett in so eine Lücke fällt, wird beim Öffnen rückwirkend als Pause erkannt.
+- **Updates:** Eine neue Version wird beim Öffnen im Hintergrund geladen und übernimmt erst, nachdem die App
+  einmal ganz geschlossen wurde (auf dem Handy: aus der App-Übersicht wegwischen, dann neu öffnen).
 - Strecken, Einstellungen und Log liegen nur auf diesem Gerät im Browser-Speicher. Wer die App-Daten oder
   Website-Daten löscht, löscht auch das Log. Nach jeder Testfahrt exportieren.
 
@@ -53,6 +55,10 @@ Hinweise zum Betrieb:
 
 1. **Setup → Neue Strecke laden:** GPX wählen, Zeitstationen als „Name, km“ eintragen (eine pro Zeile), importieren.
    Für Testfahrten nicht benötigte Zeilen löschen. Es lassen sich mehrere Strecken speichern; eine ist aktiv.
+   - **Ohne Strecke fahren:** Statt einer GPX nur Name und geplante Distanz eingeben. Die App zählt die
+     gefahrenen km per GPS mit (ab der Startzeit, nur bei offener App). Das ist ungenauer als mit GPX: Bei einer
+     Messung alle 30 s werden Kurven abgeschnitten, und Lücken bei gesperrtem Handy zählen nur als Luftlinie.
+     Der Zähler läuft also eher zu wenig. Zeitstationen nach km und der Notbetrieb-Regler funktionieren weiter.
 2. **Setup → Aktive Strecke:** Startzeit, Zeitlimit, Zielzeit, Basis-Schnitt, Abschnittsfaktoren, Pausenbudget
    und Schlafblöcke einstellen. Über dem Formular steht die Plan-Ankunft mit Reserve.
 3. **Rennen:** drei große Zahlen (Vorsprung/Rückstand, möglicher Schlaf, nötiger Schnitt), darunter km,

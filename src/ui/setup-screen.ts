@@ -72,7 +72,13 @@ function routesSection(app: App): HTMLElement {
           'div',
           { class: 'route-info' },
           h('strong', null, r.name),
-          h('span', null, `${fmt1(r.totalKm)} km · ${fmtInt(r.ascentM)} hm · ${r.stations.length} Zeitstationen`),
+          h(
+            'span',
+            null,
+            r.free
+              ? `ohne Strecke · ${fmt1(r.totalKm)} km · ${r.stations.length} Zeitstationen`
+              : `${fmt1(r.totalKm)} km · ${fmtInt(r.ascentM)} hm · ${r.stations.length} Zeitstationen`,
+          ),
         ),
         active
           ? h('span', { class: 'badge' }, 'aktiv')
@@ -122,6 +128,22 @@ function routesSection(app: App): HTMLElement {
     await app.importRoute(pending.gpx, name.value.trim(), parsed.stations);
   });
 
+  // Fahrt ohne Strecke
+  const freeErrors = errorBox();
+  const freeName = h('input', { type: 'text', autocomplete: 'off', value: 'Freie Fahrt' });
+  const freeKm = h('input', { type: 'text', inputmode: 'decimal', autocomplete: 'off' });
+  const freeBtn = h('button', { type: 'button', class: 'btn' }, 'Fahrt ohne Strecke anlegen');
+  freeBtn.addEventListener('click', async () => {
+    const km = parseDe(freeKm.value);
+    const msgs: string[] = [];
+    if (!freeName.value.trim()) msgs.push('Name fehlt.');
+    if (!Number.isFinite(km) || km <= 0) msgs.push('Geplante Distanz: bitte eine Zahl größer als 0 eingeben.');
+    freeErrors.show(msgs);
+    if (msgs.length) return;
+    freeBtn.disabled = true;
+    await app.createFreeRide(freeName.value.trim(), km);
+  });
+
   return h(
     'section',
     { class: 'card' },
@@ -138,6 +160,15 @@ function routesSection(app: App): HTMLElement {
     ),
     errors.el,
     importBtn,
+    h('h3', null, 'Ohne Strecke fahren'),
+    h(
+      'p',
+      { class: 'muted' },
+      'Nur die geplante Distanz eingeben. Die App zählt die gefahrenen km per GPS mit, solange sie offen ist. Das ist ungenauer als mit GPX: Kurven werden abgeschnitten, Lücken zählen nur als Luftlinie.',
+    ),
+    h('div', { class: 'grid' }, field('Name', freeName), field('Geplante Distanz (km)', freeKm)),
+    freeErrors.el,
+    freeBtn,
   );
 }
 
@@ -150,6 +181,12 @@ function planSection(app: App): HTMLElement {
 
   const name = h('input', { type: 'text', value: meta.name, autocomplete: 'off' });
   const stations = h('textarea', { rows: Math.max(3, meta.stations.length + 1), spellcheck: false, value: stationsToText(meta.stations) });
+  const distance = meta.free ? numInput(meta.totalKm) : null;
+  /** Streckenlänge: bei Fahrten ohne Strecke aus dem Eingabefeld, sonst aus der GPX. */
+  const totalKm = (): number => {
+    const v = distance ? parseDe(distance.value) : meta.totalKm;
+    return Number.isFinite(v) && v > 0 ? v : meta.totalKm;
+  };
   const start = h('input', { type: 'datetime-local', value: toLocalInput(c.startMs) });
   const limit = numInput(c.limitH);
   const target = numInput(c.targetH);
@@ -165,7 +202,7 @@ function planSection(app: App): HTMLElement {
   const factorBox = h('div', { class: 'grid' });
   let factorInputs: HTMLInputElement[] = [];
   const renderFactors = () => {
-    const parsed = parseStations(stations.value, meta.totalKm).stations;
+    const parsed = parseStations(stations.value, totalKm()).stations;
     const names = ['Start', ...parsed.map((s) => s.name), 'Ziel'];
     const old = factorInputs.map((i) => i.value);
     factorInputs = [];
@@ -261,9 +298,13 @@ function planSection(app: App): HTMLElement {
       return v;
     };
 
-    const parsed = parseStations(stations.value, meta.totalKm);
+    const parsed = parseStations(stations.value, totalKm());
     msgs.push(...parsed.errors);
     const st: Station[] = parsed.stations;
+    if (distance) {
+      const d = parseDe(distance.value);
+      if (!Number.isFinite(d) || d <= 0) msgs.push('Geplante Distanz: bitte eine Zahl größer als 0 eingeben.');
+    }
     if (!name.value.trim()) msgs.push('Name der Strecke fehlt.');
     const startMs = fromLocalInput(start.value);
     if (!Number.isFinite(startMs)) msgs.push('Startzeit fehlt.');
@@ -293,7 +334,7 @@ function planSection(app: App): HTMLElement {
     if (cfg.targetH > cfg.limitH) msgs.push('Die Zielzeit darf nicht über dem Zeitlimit liegen.');
     errors.show(msgs);
     if (msgs.length) return;
-    await app.saveMeta({ name: name.value.trim(), stations: st, cfg });
+    await app.saveMeta({ name: name.value.trim(), stations: st, cfg, ...(distance ? { totalKm: totalKm() } : {}) });
   });
 
   // Zusammenfassung des gespeicherten Plans
@@ -320,9 +361,16 @@ function planSection(app: App): HTMLElement {
     'section',
     { class: 'card' },
     h('h2', null, 'Aktive Strecke'),
-    h('p', { class: 'muted' }, `${fmt1(meta.totalKm)} km · ${fmtInt(meta.ascentM)} hm`),
+    h(
+      'p',
+      { class: 'muted' },
+      meta.free
+        ? `Ohne Strecke · ${fmt1(meta.totalKm)} km · km werden per GPS gezählt`
+        : `${fmt1(meta.totalKm)} km · ${fmtInt(meta.ascentM)} hm`,
+    ),
     summary,
     field('Name', name),
+    distance ? field('Geplante Distanz (km)', distance) : null,
     field('Zeitstationen (eine pro Zeile: Name, km)', stations),
     h('h3', null, 'Zeiten'),
     field('Startzeit', start),

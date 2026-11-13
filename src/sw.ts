@@ -8,12 +8,13 @@ const [VERSION, ...FILES] = '__PRECACHE_MANIFEST__'.split('|');
 const PREFIX = 'rag-pacer-';
 const CACHE = `${PREFIX}${VERSION}`;
 
+// Kein skipWaiting: Eine neue Version übernimmt erst, wenn die App ganz geschlossen war.
+// Sonst könnte sie mitten im Laden den alten Cache löschen, und die Seite bliebe leer.
 sw.addEventListener('install', (event) => {
   event.waitUntil(
     caches
       .open(CACHE)
-      .then((cache) => cache.addAll(['./', ...FILES.filter((f) => f !== 'index.html')]))
-      .then(() => sw.skipWaiting()),
+      .then((cache) => cache.addAll(['./', ...FILES.filter((f) => f !== 'index.html')])),
   );
 });
 

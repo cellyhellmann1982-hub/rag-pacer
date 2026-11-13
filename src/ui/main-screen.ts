@@ -528,7 +528,7 @@ function raceView(app: App): Screen {
       gpsText = `neben der Strecke (${fmtInt(app.gps.distM ?? 0)} m)`;
       gpsTone = 'gelb';
     } else {
-      gpsText = `ok · vor ${fmtInt((Date.now() - app.gps.lastFixMs) / 1000)} s`;
+      gpsText = `ok · vor ${fmtInt((Date.now() - app.gps.lastFixMs) / 1000)} s${meta.free ? ' · km per GPS gezählt' : ''}`;
     }
     setText(dGps, gpsText);
     setTone(dGps, gpsTone);

@@ -41,6 +41,7 @@ export function emptyRace(): RaceState {
     log: [],
     motion: { slowSinceMs: null, pauseStartMs: null },
     lastFix: null,
+    odoFix: null,
     sleepWakeMs: null,
   };
 }

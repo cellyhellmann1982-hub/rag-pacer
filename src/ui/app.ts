@@ -1,5 +1,11 @@
 import type { ParsedGpx } from '../model/gpx';
-import { INITIAL_MOTION, projectOnRoute, speedBetweenKmh, updateMotion } from '../model/projection';
+import {
+  advanceOdometer,
+  INITIAL_MOTION,
+  projectOnRoute,
+  speedBetweenKmh,
+  updateMotion,
+} from '../model/projection';
 import { buildRoute, routeTotalKm } from '../model/route';
 import { defaultConfig, emptyRace } from '../state/defaults';
 import * as store from '../state/store';
@@ -210,9 +216,9 @@ export class App {
 
   private async activate(id: string | null, persist = true): Promise<void> {
     this.meta = this.routes.find((r) => r.id === id) ?? null;
-    this.route = this.meta ? await store.loadRoute(this.meta.id) : null;
+    this.route = this.meta && !this.meta.free ? await store.loadRoute(this.meta.id) : null;
     this.race = this.meta ? await store.loadRace(this.meta.id) : emptyRace();
-    if (this.meta && !this.route) this.meta = null;
+    if (this.meta && !this.route && !this.meta.free) this.meta = null;
     this.test.on = false;
     this.whatIf = null;
     this.sleepChooser = false;
@@ -243,6 +249,24 @@ export class App {
     this.refresh();
   }
 
+  /** Legt eine Fahrt ohne Strecke an: nur Name und Distanz, km werden per GPS mitgezählt. */
+  async createFreeRide(name: string, totalKm: number): Promise<void> {
+    const meta: RouteMeta = {
+      id: `${Date.now().toString(36)}${Math.floor(Math.random() * 1e6).toString(36)}`,
+      name,
+      totalKm,
+      ascentM: 0,
+      importedMs: Date.now(),
+      free: true,
+      stations: [],
+      cfg: defaultConfig(0),
+    };
+    this.routes = [...this.routes, meta];
+    await store.saveRoutes(this.routes);
+    await this.activate(meta.id);
+    this.refresh();
+  }
+
   async deleteRoute(id: string): Promise<void> {
     this.routes = this.routes.filter((r) => r.id !== id);
     await store.saveRoutes(this.routes);
@@ -252,7 +276,9 @@ export class App {
   }
 
   /** Speichert geänderte Stationen/Konfiguration der aktiven Strecke. */
-  async saveMeta(patch: Pick<RouteMeta, 'name' | 'stations' | 'cfg'>): Promise<void> {
+  async saveMeta(
+    patch: Pick<RouteMeta, 'name' | 'stations' | 'cfg'> & { totalKm?: number },
+  ): Promise<void> {
     if (!this.meta) return;
     const updated: RouteMeta = { ...this.meta, ...patch };
     this.routes = this.routes.map((r) => (r.id === updated.id ? updated : r));
@@ -350,21 +376,36 @@ export class App {
     this.gps.lastFixMs = now;
     if (this.lastEvalMs !== null && now - this.lastEvalMs < GPS_EVAL_MS) return;
     this.lastEvalMs = now;
-    if (!this.route || !this.meta) return;
+    if (!this.meta) return;
 
     const race = this.race;
-    const proj = projectOnRoute(this.route, f, race.lastKm);
-    this.gps.onRoute = proj.onRoute;
-    this.gps.distM = proj.distM;
-    if (proj.onRoute && proj.km !== null) {
-      const prev = race.lastKm ?? 0;
-      race.lastKm = proj.km;
-      this.logPassages(race, prev, proj.km, now);
+    const sleeping = race.log.some((e) => e.type === 'sleep' && e.endMs === null);
+    const racing = now >= this.meta.cfg.startMs;
+    if (this.meta.free) {
+      // Fahrt ohne Strecke: km per GPS mitzählen (erst ab der Startzeit, nicht im Schlaf).
+      this.gps.onRoute = true;
+      this.gps.distM = null;
+      const odo = advanceOdometer(racing && !sleeping ? race.odoFix : null, f);
+      race.odoFix = odo.anchor;
+      if (odo.addedKm > 0) {
+        const prev = race.lastKm ?? 0;
+        race.lastKm = Math.min(this.meta.totalKm, prev + odo.addedKm);
+        this.logPassages(race, prev, race.lastKm, now);
+      }
+    } else if (this.route) {
+      const proj = projectOnRoute(this.route, f, race.lastKm);
+      this.gps.onRoute = proj.onRoute;
+      this.gps.distM = proj.distM;
+      if (proj.onRoute && proj.km !== null) {
+        const prev = race.lastKm ?? 0;
+        race.lastKm = proj.km;
+        this.logPassages(race, prev, proj.km, now);
+      }
+    } else {
+      return;
     }
 
     const cur = { lat: f.lat, lon: f.lon, tMs: now };
-    const sleeping = race.log.some((e) => e.type === 'sleep' && e.endMs === null);
-    const racing = now >= this.meta.cfg.startMs;
     if (race.lastFix && racing && !sleeping) {
       const dt = now - race.lastFix.tMs;
       // Bei kurzen Abständen die Geräte-Geschwindigkeit, bei Lücken der Schnitt über die Lücke.
